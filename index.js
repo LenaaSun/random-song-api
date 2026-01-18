@@ -1,169 +1,166 @@
-import express from 'express';
-import mongoose from 'mongoose';
-import Kebab from './models/kebab.js';
-import Song from './models/song.js';
-import cors from 'cors';
-import fs from 'fs';
-import path from 'path';
-import { parse } from 'csv-parse/sync';
-import JSON5 from 'json5';
+import express from "express";
+import mongoose from "mongoose";
+import cors from "cors";
+import fs from "fs";
+import { parse } from "csv-parse/sync";
+import JSON5 from "json5";
 
-let genresCache = null;
-
+import Kebab from "../models/kebab.js";
+import Song from "../models/song.js";
 
 const app = express();
-const port = process.env.PORT || 3000;
 
 app.use(express.json());
-// Allow your frontend origin (or use '*' for dev)
-const corsOrigin = process.env.CORS_ORIGIN || 'http://localhost:3001';
-app.use(cors({ origin: corsOrigin }));
- 
 
+// CORS: allow your website + local dev
+const allowed = [
+  "https://lenasun.me",
+  "http://localhost:3001",
+  "http://localhost:3000",
+];
+app.use(
+  cors({
+    origin(origin, cb) {
+      if (!origin) return cb(null, true); // allows server-to-server + curl
+      if (allowed.includes(origin)) return cb(null, true);
+      return cb(null, false);
+    },
+  })
+);
 
-//mongoDb tlas connection string
+// ---- DB + cache helpers (serverless-safe) ----
+let genresCache = null;
+let seeded = false;
 
-const mongoUri = process.env.MONGO_URI || "mongodb+srv://lenaelifsun_db_user:Re4uO2aZC79HjFEb@cluster0.wylurtt.mongodb.net/"
+const mongoUri = process.env.MONGO_URI; // MUST be set in Vercel env vars
+const dbName = process.env.DB_NAME || "kebabDB";
 
-//db name 
-const dbName = "kebabDB"
+async function connectToDb() {
+  if (!mongoUri) throw new Error("MONGO_URI env var is missing");
 
+  // Reuse connection if already connected (important on serverless)
+  if (mongoose.connection.readyState === 1) return;
 
-const loadGenresCache = async () => {
-    try {
-        const genres = await Song.distinct('artist_genre', { artist_genre: { $ne: 'none' } });
-        genresCache = genres.sort();
-        console.log(`Genres cache loaded: ${genresCache.length} unique genres`);
-    } catch (err) {
-        console.error('Failed to load genres cache:', err);
-        genresCache = [];
-    }
-};
+  await mongoose.connect(mongoUri, { dbName });
+}
+
+async function loadGenresCache() {
+  const genres = await Song.distinct("artist_genre", {
+    artist_genre: { $ne: "none" },
+  });
+  genresCache = genres.sort();
+}
 
 async function seedIfEmpty() {
-    const songCount = await Song.countDocuments();
-    if (songCount === 0) {
-        const csvPath = "track_data_final.csv";
-        let songsToInsert = [];
-        
-        console.log(fs.existsSync(csvPath) ? `Found songs CSV at ${csvPath}` : `Songs CSV not found at ${csvPath}`);
+  if (seeded) return; // don't seed multiple times per warm instance
 
-        if (fs.existsSync(csvPath)) {
-            try {
-                const raw = fs.readFileSync(csvPath, 'utf8');
-                const records = parse(raw, { columns: true, skip_empty_lines: true, trim: true });
+  const songCount = await Song.countDocuments();
+  if (songCount > 0) {
+    seeded = true;
+    return;
+  }
 
-                
-                const buildEmbed = (track_id) => {
-                    if (!track_id) return '';
-                    const id = String(track_id).trim();
-                    return `<iframe src="https://open.spotify.com/embed/track/${encodeURIComponent(id)}" width="300" height="380" frameborder="0" allowtransparency="true" allow="encrypted-media"></iframe>`;
-                };
+  const csvPath = "track_data_final.csv";
+  if (!fs.existsSync(csvPath)) {
+    seeded = true;
+    return;
+  }
 
-                const getArtistGenre = (val) => {
-                    if (!val && val !== 0) return 'none';
-                    if (Array.isArray(val)) return val.length ? String(val[0]).trim() : 'none';
+  const raw = fs.readFileSync(csvPath, "utf8");
+  const records = parse(raw, { columns: true, skip_empty_lines: true, trim: true });
 
-                    const s = String(val).trim();
-                    if (!s || s === '[]') return 'none';
+  const buildEmbed = (track_id) => {
+    if (!track_id) return "";
+    const id = String(track_id).trim();
+    return `<iframe src="https://open.spotify.com/embed/track/${encodeURIComponent(
+      id
+    )}" width="300" height="380" frameborder="0" allowtransparency="true" allow="encrypted-media"></iframe>`;
+  };
 
-                    try {
-                        const parsed = JSON5.parse(s);
-                        if (Array.isArray(parsed) && parsed.length) return String(parsed[0]).trim();
-                    } catch (_) {}
+  const getArtistGenre = (val) => {
+    if (!val && val !== 0) return "none";
+    if (Array.isArray(val)) return val.length ? String(val[0]).trim() : "none";
 
-                    return 'none';
-                };  
+    const s = String(val).trim();
+    if (!s || s === "[]") return "none";
 
-
-                songsToInsert = records.map(r => ({
-                    track_name: r.track_name,
-                    artist_name: r.artist_name,
-                    track_duration_ms: r.track_duration_ms,
-                    track_id: r.track_id,
-                    embed: buildEmbed(r.track_id),
-                    artist_genre: getArtistGenre(r.artist_genres)
-                })).filter(s => s.track_name && s.artist_name && s.artist_genre !== 'none');
-
-                if (songsToInsert.length > 0) {
-                    await Song.insertMany(songsToInsert);
-                    console.log(`Inserted ${songsToInsert.length} songs from CSV (${csvPath})`);
-                } else {
-                    console.log('No valid song rows found in CSV, inserting sample songs instead.');
-                }
-            } catch (err) {
-                console.error('Failed to parse songs CSV:', err);
-            }
-        }
-
-    }
-}
-
-
-async function main() {
     try {
-        await mongoose.connect(mongoUri, {dbName: dbName});
-        console.log('Connected to MongoDB');
+      const parsed = JSON5.parse(s);
+      if (Array.isArray(parsed) && parsed.length) return String(parsed[0]).trim();
+    } catch (_) {}
 
-        await seedIfEmpty();
-        await loadGenresCache();  // Load cache once on startup
+    return "none";
+  };
 
-        app.get('/get-kebabs', async (req, res) => {
-            const kebabs  = await Kebab.find();
-            res.json(kebabs);
-        });
+  const songsToInsert = records
+    .map((r) => ({
+      track_name: r.track_name,
+      artist_name: r.artist_name,
+      track_duration_ms: r.track_duration_ms,
+      track_id: r.track_id,
+      embed: buildEmbed(r.track_id),
+      artist_genre: getArtistGenre(r.artist_genres),
+    }))
+    .filter((s) => s.track_name && s.artist_name && s.artist_genre !== "none");
 
-        app.post('/add-kebab', async (req, res) => {
-            try {
-                const { name, ingredients, price, isVegetarian } = req.body;
-                const newKebab = new Kebab({ name, ingredients, price, isVegetarian });
-                await newKebab.save();
-                res.status(201).json(newKebab);
-            } catch (error) {
-                res.status(400).json({ error: error.message || 'Invalid kebab data' });
-            }
-        });
+  if (songsToInsert.length > 0) {
+    await Song.insertMany(songsToInsert);
+  }
 
-        app.get('/get-random-song-by-genre', async (req, res) => {
-            try {
-                const { genre } = req.query;
-                if (!genre) {
-                    return res.status(400).json({ error: 'genre query param required' });
-                }
-
-                const pipeline = [
-                    { $match: { artist_genre: genre } },
-                    { $sample: { size: 1 } }
-                ];
-
-                const [song] = await Song.aggregate(pipeline);
-                if (!song) {
-                    return res.status(404).json({ error: `No songs found for genre: ${genre}` });
-                }
-
-                res.json(song);
-            } catch (err) {
-                res.status(500).json({ error: err.message });
-            }
-        });
-
-        app.get('/get-genres', async (req, res) => {
-            res.json({ genres: genresCache, count: genresCache.length });
-        });
-
-
-
-        app.listen(port, () => {
-            console.log(`Server is running on http://localhost:${port}`);
-        });
-
-    }
-    catch (error) {
-        console.error('Error connecting to MongoDB:', error);
-    }
-
+  seeded = true;
 }
 
-main();
+// ---- Middleware: ensure DB + cache before routes ----
+app.use(async (req, res, next) => {
+  try {
+    await connectToDb();
+    await seedIfEmpty();
 
+    if (!genresCache) await loadGenresCache();
+    next();
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message || "Server init failed" });
+  }
+});
 
+// ---- Routes ----
+app.get("/get-kebabs", async (req, res) => {
+  const kebabs = await Kebab.find();
+  res.json(kebabs);
+});
+
+app.post("/add-kebab", async (req, res) => {
+  try {
+    const { name, ingredients, price, isVegetarian } = req.body;
+    const newKebab = new Kebab({ name, ingredients, price, isVegetarian });
+    await newKebab.save();
+    res.status(201).json(newKebab);
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Invalid kebab data" });
+  }
+});
+
+app.get("/get-random-song-by-genre", async (req, res) => {
+  try {
+    const { genre } = req.query;
+    if (!genre) return res.status(400).json({ error: "genre query param required" });
+
+    const [song] = await Song.aggregate([
+      { $match: { artist_genre: genre } },
+      { $sample: { size: 1 } },
+    ]);
+
+    if (!song) return res.status(404).json({ error: `No songs found for genre: ${genre}` });
+    res.json(song);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/get-genres", async (req, res) => {
+  res.json({ genres: genresCache || [], count: (genresCache || []).length });
+});
+
+// IMPORTANT: export default app (NO app.listen)
+export default app;
