@@ -31,7 +31,9 @@ app.use(
 let genresCache = null;
 let seeded = false;
 
-const mongoUri = process.env.MONGO_URI; // MUST be set in Vercel env vars
+const mongoUri = process.env.MONGO_URI;
+if (!mongoUri) throw new Error("MONGO_URI missing");
+
 const dbName = process.env.DB_NAME || "kebabDB";
 
 async function connectToDb() {
