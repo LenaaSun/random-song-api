@@ -5,7 +5,6 @@ import fs from "fs";
 import { parse } from "csv-parse/sync";
 import JSON5 from "json5";
 
-import Kebab from "../models/kebab.js";
 import Song from "../models/song.js";
 
 const app = express();
@@ -124,22 +123,6 @@ app.use(async (req, res, next) => {
   }
 });
 
-// ---- Routes ----
-app.get("/get-kebabs", async (req, res) => {
-  const kebabs = await Kebab.find();
-  res.json(kebabs);
-});
-
-app.post("/add-kebab", async (req, res) => {
-  try {
-    const { name, ingredients, price, isVegetarian } = req.body;
-    const newKebab = new Kebab({ name, ingredients, price, isVegetarian });
-    await newKebab.save();
-    res.status(201).json(newKebab);
-  } catch (error) {
-    res.status(400).json({ error: error.message || "Invalid kebab data" });
-  }
-});
 
 app.get("/get-random-song-by-genre", async (req, res) => {
   try {
