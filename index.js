@@ -5,7 +5,7 @@ import fs from "fs";
 import { parse } from "csv-parse/sync";
 import JSON5 from "json5";
 
-import Song from "../models/song.js";
+import Song from "./models/song.js";
 
 const app = express();
 
